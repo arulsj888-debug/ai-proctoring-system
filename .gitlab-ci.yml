@@ -1,0 +1,58 @@
+stages:
+  - build
+  - test
+  - release
+  - deploy
+ 
+variables:
+  CONTAINER_TEST_IMAGE: $CI_REGISTRY_IMAGE
+  CONTAINER_RELEASE_IMAGE: $CI_REGISTRY_IMAGE:iit
+  ENV_FILE: config/env.production
+ 
+default:
+  image: docker:latest
+  services:
+    - docker:dind
+ 
+before_script:
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+ 
+build:
+  stage: build
+  tags:
+    - dsais
+  script:
+    - docker build -t $CONTAINER_TEST_IMAGE -f Dockerfile .
+    - docker push $CONTAINER_TEST_IMAGE
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+ 
+test:
+  stage: test
+  tags:
+    - dsais
+  script:
+    - echo "Running tests..."
+    # - docker run --rm $CONTAINER_TEST_IMAGE npm tes
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+ 
+release:
+  stage: release
+  tags:
+    - dsais
+  script:
+    - docker tag $CONTAINER_TEST_IMAGE $CONTAINER_RELEASE_IMAGE
+    - docker push $CONTAINER_RELEASE_IMAGE
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+ 
+deploy:
+  stage: deploy
+  tags:
+    - dsais
+  script:
+    - echo "Triggering deployment pipeline..."
+    - curl --request POST --form "token=${DEPLOY_REPO_TRIGGER_TOKEN}" --form "ref=main" "https://srv662860.hstgr.cloud/api/v4/projects/${DEPLOY_REPO_ID}/trigger/pipeline"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'

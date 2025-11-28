@@ -1,0 +1,9 @@
+Flask
+Flask-SocketIO
+eventlet
+numpy
+opencv-python
+mediapipe
+ultralytics
+python-dotenv
+pymongo

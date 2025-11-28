@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proctor Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #333; color: #f0f0f0; margin: 0; padding: 0; }
+        header { background-color: #222; padding: 15px 20px; text-align: center; border-bottom: 2px solid #00aaff; }
+        h1 { margin: 0; font-size: 24px; }
+        #dashboard-grid { display: flex; flex-wrap: wrap; gap: 20px; padding: 20px; justify-content: center; }
+        .student-card { background-color: #444; border: 2px solid #555; border-radius: 8px; width: 360px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: all 0.3s ease; overflow: hidden; }
+        .student-card.warning { border-color: #ff4d4d; box-shadow: 0 0 15px #ff4d4d; animation: pulse-red 1.5s infinite; }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 5px #ff4d4d; } 50% { box-shadow: 0 0 20px #ff6666; } 100% { box-shadow: 0 0 5px #ff4d4d; } }
+        .student-video { width: 100%; height: 270px; background-color: #000; object-fit: cover; }
+        .student-info { padding: 10px 15px; background-color: #3a3a3a; }
+        .student-info h3 { margin: 0 0 5px 0; font-size: 16px; word-break: break-all; }
+        .controls { text-align: right; }
+        .kick-button { background-color: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .kick-button:hover { background-color: #c82333; }
+        .warnings-log { padding: 10px 15px; max-height: 100px; overflow-y: auto; background-color: #2c2c2c; font-size: 13px; }
+        .warnings-log p { margin: 2px 0; border-bottom: 1px solid #444; padding-bottom: 2px; }
+    </style>
+</head>
+<body>
+
+    <header><h1>Live Proctoring Dashboard</h1></header>
+    
+    <main id="dashboard-grid"></main>
+
+    <!-- Template for a student card (hidden by default) -->
+    <div id="student-card-template" class="student-card" style="display: none;">
+        <img class="student-video" src="" alt="Student Feed">
+        <div class="student-info">
+            <h3 class="student-id">Student_ID_Here</h3>
+            <div class="controls">
+                <button class="kick-button">Terminate Session</button>
+            </div>
+        </div>
+        <div class="warnings-log">
+            <!-- Warnings will be appended here -->
+        </div>
+    </div>
+
+    <script>
+        const SERVER_URL = 'http://localhost:2002';
+        const socket = io(SERVER_URL, { path: '/iit/socket.io' });
+        const dashboardGrid = document.getElementById('dashboard-grid');
+        const cardTemplate = document.getElementById('student-card-template');
+
+        // 1. Announce self as a proctor to the server
+        socket.on('connect', () => {
+            console.log('✅ Connected to server. Identifying as proctor.');
+            socket.emit('join_proctor_room');
+        });
+
+        // 2. A new student has started their session
+        socket.on('student_joined', (data) => {
+            console.log(`Student joined: ${data.userId}`);
+            const newCard = cardTemplate.cloneNode(true);
+            newCard.id = `card-${data.userId}`;
+            newCard.style.display = 'block';
+
+            newCard.querySelector('.student-id').textContent = data.userId;
+            
+            // Set up the kick button for this specific user
+            const kickButton = newCard.querySelector('.kick-button');
+            kickButton.addEventListener('click', () => {
+                if (confirm(`Are you sure you want to terminate the session for ${data.userId}?`)) {
+                    console.log(`[ACTION] Terminating session for ${data.userId}`);
+                    socket.emit('proctor_action', {
+                        action: 'terminate',
+                        targetUserId: data.userId,
+                        reason: 'Session manually terminated by proctor.'
+                    });
+                }
+            });
+
+            dashboardGrid.appendChild(newCard);
+        });
+
+        // 3. A student has left or been disconnected
+        socket.on('student_left', (data) => {
+            console.log(`Student left: ${data.userId}`);
+            const cardToRemove = document.getElementById(`card-${data.userId}`);
+            if (cardToRemove) {
+                cardToRemove.remove();
+            }
+        });
+
+        // 4. Receive a live video frame from a student
+        socket.on('student_video_update', (data) => {
+            const studentCard = document.getElementById(`card-${data.userId}`);
+            if (studentCard) {
+                const videoElement = studentCard.querySelector('.student-video');
+                // The frame is sent as a Base64 string, which can be used directly as an image source
+                videoElement.src = `data:image/jpeg;base64,${data.frame}`;
+            }
+        });
+
+        // 5. Receive a warning for a student from the AI
+        socket.on('student_warning_update', (data) => {
+            console.log(`Warning for ${data.userId}: ${data.message}`);
+            const studentCard = document.getElementById(`card-${data.userId}`);
+            if (studentCard) {
+                const warningsLog = studentCard.querySelector('.warnings-log');
+                const p = document.createElement('p');
+                p.textContent = `[${new Date().toLocaleTimeString()}] ${data.message}`;
+                warningsLog.prepend(p); // Add new warnings to the top
+
+                // Highlight the card
+                studentCard.classList.add('warning');
+                // Remove the highlight after 5 seconds
+                setTimeout(() => {
+                    studentCard.classList.remove('warning');
+                }, 5000);
+            }
+        });
+
+    </script>
+</body>
+</html>

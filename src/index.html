@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proctoring Session Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { color: #1e3a5f; }
+        .login-container { background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+        .login-container input { display: block; width: 300px; padding: 10px; margin: 10px auto; border-radius: 4px; border: 1px solid #ccc; }
+        .container { display: none; gap: 20px; width: 95%; max-width: 1200px; }
+        .main-content, .sidebar { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .main-content { flex: 2; }
+        .sidebar { flex: 1; }
+        video { width: 100%; border-radius: 8px; border: 1px solid #ddd; background-color: #000; }
+        #status { padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; margin-top: 10px; transition: background-color 0.3s; }
+        .status-connecting { background-color: #ffc107; color: #333; }
+        .status-connected { background-color: #28a745; color: white; }
+        .status-disconnected { background-color: #dc3545; color: white; }
+        #warnings { margin-top: 15px; padding: 10px; background-color: #fff3cd; border-left: 5px solid #ffeeba; min-height: 50px; }
+        .question { margin-bottom: 20px; }
+        textarea { width: 100%; height: 80px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin: 5px; }
+        #startButton { background-color: #007bff; color: white; }
+        #finishButton { background-color: #6c757d; color: white; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #kickout-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); color: white; display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .kickout-box { background-color: #d32f2f; padding: 40px; border-radius: 10px; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+    <h1>Proctoring Session</h1>
+
+    <div id="login-container" class="login-container">
+        <h2>Enter Your Details</h2>
+        <input type="text" id="userIdInput" placeholder="Enter User ID" required>
+        <input type="email" id="userEmailInput" placeholder="Enter Your Email" required>
+        <button id="startButton">Start Session</button>
+    </div>
+    
+    <div id="session-container" class="container">
+         <div class="main-content">
+            <h2>Exam Questions</h2>
+             <p>User ID: <strong id="userIdDisplay"></strong> | Email: <strong id="userEmailDisplay"></strong></p>
+            <div class="question"><p><strong>1. What is the primary purpose of a web server?</strong></p><textarea placeholder="Type your answer here..."></textarea></div>
+            <div class="question"><p><strong>2. Explain the difference between HTTP and HTTPS.</strong></p><textarea placeholder="Type your answer here..."></textarea></div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button id="finishButton" disabled>Finish & Submit</button>
+            </div>
+        </div>
+        <div class="sidebar">
+            <h2>Monitoring Feed</h2>
+            <video id="webcam" autoplay playsinline muted></video>
+            <canvas id="canvas" style="display:none;"></canvas>
+            <div id="status" class="status-disconnected">Disconnected</div>
+            <h3>Live Warnings:</h3>
+            <div id="warnings">No warnings yet.</div>
+        </div>
+    </div>
+
+    <div id="kickout-overlay">
+        <div class="kickout-box">
+            <h2>Session Terminated</h2>
+            <p>You have been removed from the session due to a policy violation.</p>
+            <p><strong>Reason:</strong> <span id="kickout-reason"></span></p>
+        </div>
+    </div>
+
+    <script>
+        const SERVER_URL = 'http://localhost:YOUR_PORT';
+        const FPS = 5;
+
+        const startButton = document.getElementById('startButton');
+        const finishButton = document.getElementById('finishButton');
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('canvas');
+        const statusDiv = document.getElementById('status');
+        const warningsDiv = document.getElementById('warnings');
+        const kickoutOverlay = document.getElementById('kickout-overlay');
+        const kickoutReasonSpan = document.getElementById('kickout-reason');
+        const loginContainer = document.getElementById('login-container');
+        const sessionContainer = document.getElementById('session-container');
+        const userIdInput = document.getElementById('userIdInput');
+        const userEmailInput = document.getElementById('userEmailInput');
+
+        let socket, videoStream, frameInterval;
+        let currentUserId, currentUserEmail;
+
+        startButton.addEventListener('click', initSession);
+        finishButton.addEventListener('click', () => endSession(true));
+        
+        async function initSession() {
+            currentUserId = userIdInput.value.trim();
+            currentUserEmail = userEmailInput.value.trim();
+            if (!currentUserId || !currentUserEmail) { alert("Please enter both User ID and Email."); return; }
+            startButton.disabled = true;
+            loginContainer.style.display = 'none';
+            sessionContainer.style.display = 'flex';
+            document.getElementById('userIdDisplay').innerText = currentUserId;
+            document.getElementById('userEmailDisplay').innerText = currentUserEmail;
+            updateStatus('Connecting...', 'status-connecting');
+            try {
+                await setupCamera();
+                connectToServer();
+            } catch (error) {
+                console.error("Failed to start session:", error);
+                alert("Could not access camera. Please check permissions.");
+                cleanup();
+            }
+        }
+        
+        async function setupCamera() {
+            videoStream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360 }, audio: false });
+            videoElement.srcObject = videoStream;
+        }
+
+        function connectToServer() {
+            socket = io(SERVER_URL, { path: '/iit/socket.io' });
+
+            socket.on('connect_error', (err) => {
+                console.error("Connection Error:", err.message);
+                updateStatus('Connection Failed', 'status-disconnected');
+            });
+
+            socket.on('connect', () => {
+                console.log('✅ Connected to server with SID:', socket.id);
+                socket.emit('register_user', { userId: currentUserId, email: currentUserEmail });
+            });
+
+            socket.on('registration_confirmed', (data) => {
+                console.log('✅ Registration confirmed by server:', data);
+                updateStatus('Connected & Monitoring', 'status-connected');
+                finishButton.disabled = false;
+                frameInterval = setInterval(sendFrame, 1000 / FPS);
+            });
+
+            socket.on('monitoring_warning', (data) => {
+                const p = document.createElement('p');
+                p.textContent = `[${new Date().toLocaleTimeString()}] ${data.message}`;
+                warningsDiv.appendChild(p);
+                warningsDiv.scrollTop = warningsDiv.scrollHeight;
+            });
+
+            socket.on('kickout', (data) => {
+                console.error(`KICKED OUT: ${data.reason}`);
+                kickoutReasonSpan.innerText = data.reason;
+                kickoutOverlay.style.display = 'flex';
+                endSession(false);
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server.');
+                updateStatus('Disconnected', 'status-disconnected');
+                cleanup();
+            });
+        }
+        
+        function sendFrame() {
+            if (!socket || !socket.connected) {
+                console.warn("Socket not connected. Cannot send frame.");
+                return;
+            }
+            console.log(`[CLIENT] Preparing to send frame...`);
+
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            const context = canvasElement.getContext('2d');
+            context.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            canvasElement.toBlob(
+                (blob) => {
+                    if (blob) {
+                        console.log(`[CLIENT] Sending frame as blob of size: ${blob.size} bytes`);
+                        socket.emit('video_frame_binary', {}, blob);
+                    } else {
+                        console.error("[CLIENT] Failed to create blob from canvas.");
+                    }
+                }, 'image/jpeg', 0.6
+            );
+        }
+
+        function endSession(isGraceful = true) {
+            console.log("Ending session...");
+            if (isGraceful && socket) {
+                alert("You have finished the session. Your report will be emailed to you if applicable.");
+                socket.disconnect();
+            }
+            cleanup();
+        }
+        function cleanup() {
+            clearInterval(frameInterval);
+            if (videoStream) { videoStream.getTracks().forEach(track => track.stop()); }
+            videoElement.srcObject = null;
+            startButton.disabled = false;
+            finishButton.disabled = true;
+        }
+        function updateStatus(message, className) {
+            statusDiv.textContent = message;
+            statusDiv.className = className;
+        }
+    </script>
+</body>
+</html>
